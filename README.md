@@ -1,44 +1,32 @@
-# wizbind
+# wiz
 
-`wizbind` is an unofficial WiZ tool that supports pairing, CLI and web controls, in an isolated environment with no access to the Internet so it does never share telemetry in case it does by default. I don't trust IoT devices and neither should you.
-
-Requires Linux, Python 3.11+, an idle AP-capable Wi-Fi interface (can be an external Wi-Fi dongle) and a second Wi-Fi device (a laptop or another dongle) with curl for pairing.
-
-The idea is to use an interface (for example, an external dongle) as an access point for a virtual LAN that we set up without an internet connection. Then, another device (such as a laptop or smartphone) to connect to the bulb’s hotspot and send a POST request to `/pairing` with the credentials of our access point for the bulb to connect to us. Once connected, we then send a POST `/complete` request to the bulb from our virtual LAN to finish the pairing.
-
-See it in action:
-
-https://github.com/user-attachments/assets/3eba5ac0-e679-448f-b5d0-e3d11a15d121
+`wiz` is a local WiZ tool that supports WiZ's manual pairing mode, and its device management, such as changing colors and brightness through the web panel. All without using the official app for anything. Everything is in your network as it should be.
 
 ## install
-Download dependencies:
+Requires Python 3.11+ and your distribution's Python `cryptography` package.
+- On Linux: `python3-cryptography` (Debian, Fedora, Void), `python-cryptography` (Arch), `dev-python/cryptography` (Gentoo).
+- On FreeBSD: `pkg install python311 py311-cryptography` (or matching newer packages).
 
-- **Arch Linux**: `pacman -Syu --needed python python-cryptography iproute2 iw hostapd dnsmasq git curl`
-- **Void Linux**: `xbps-install -S python3 python3-cryptography iproute2 iw hostapd dnsmasq git curl`
-- **Debian 12+**: `apt update && apt install --no-install-recommends python3 python3-cryptography iproute2 iw hostapd dnsmasq-base git curl`
-- **Fedora**: `dnf install python3 python3-cryptography iproute iw hostapd dnsmasq git curl`
+[!NOTE] 
+Almost mandatory to block Internet access to the WiZ devices while allowing LAN communication for the UDP requests. When the device connects to the Internet, it goes to talk with the WiZ MQTT server, and after the MQTT server's response it causes the device to unpair automatically. I suspect it's because an invalid `hid`. Blocking Internet access for the device makes it work properly (lol).
 
-Then: 
+After this, then:
 
-```sh
-git clone https://github.com/50ck/wizbind
-cd wizbind
+```bash
+git clone https://github.com/50ck/wiz
+cd wiz
 mkdir -p ~/.local/bin
-ln -s "$PWD/wizbind" ~/.local/bin/wizbind
+ln -s "$PWD/wizbind" ~/.local/bin/wiz
 ```
-Ensure `~/.local/bin` is in your PATH.
+
+Ensure ~/.local/bin is in your PATH.
+
 
 ## examples
 
 ```sh
-wizbind onboard wlan0  # or the interface of the Wi-Fi dongle
-wizbind  # to start AP, DHCP and web panel
-
-# in another terminal, with the AP running:
-wizbind list devices
-wizbind list modes
-wizbind device bulb0 mode 16
-wizbind device bulb0 color '#ff00ff66'
-wizbind device bulb0 brightness 60
-wizbind device bulb0 off
+wiz pair # manual setup with guided steps
+wiz upair # unattended setup
+wiz upair --interface wlan0
+wiz web
 ```

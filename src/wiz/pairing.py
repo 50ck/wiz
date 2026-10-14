@@ -1,7 +1,7 @@
 """WiZ manual pairing, validated against the captured official request.
 
-Returned payloads contain recoverable credentials: never log them or store them
-in source control. Experimental transport files must be private and temporary.
+This standalone implementation retains the public constants and validated
+encoding from wizbind. Pairing always uses a nonzero local Home ID of 420.
 """
 
 from __future__ import annotations
@@ -60,7 +60,6 @@ def generate_pairing_payload(
     iv: bytes | None = None,
     offsets: tuple[int, int] = (15, 1),
     encrypted_prefix_length: int | None = None,
-    hid: int = 420,
     env: str = "pro",
     reg: str = "eu",
     ts: int | None = None,
@@ -118,9 +117,7 @@ def generate_pairing_payload(
     if len(suffix) > 32:
         raise ValueError("Plaintext suffix exceeds firmware limit")
     if (
-        type(hid) is not int
-        or not 0 <= hid <= 0x7FFFFFFF
-        or env not in ("pro", "")
+        env not in ("pro", "")
         or reg not in ("eu", "")
     ):
         raise ValueError("Unsupported pairing metadata")
@@ -142,7 +139,7 @@ def generate_pairing_payload(
         "pwd": pwd,
         "offsets": [line, column],
         "iv": base64.b64encode(iv).decode("ascii"),
-        "hid": hid,
+        "hid": 420,
         "env": env,
         "reg": reg,
         "ts": timestamp,

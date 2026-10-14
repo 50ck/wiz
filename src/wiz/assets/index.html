@@ -2,7 +2,7 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>wizbind</title>
+<title>wiz</title>
 <style>
 :root{color-scheme:dark;font:16px system-ui,sans-serif;background:#101114;color:#ececf0;--color:#00ff00}
 *{box-sizing:border-box}body{max-width:680px;margin:auto;padding:48px 20px}header{display:flex;align-items:center;justify-content:center;margin-bottom:32px}
@@ -12,15 +12,15 @@ input[type=range]{width:100%;margin:22px 0 0;accent-color:var(--color)}button{fo
 button[aria-pressed=true]{border:2px inset rgba(255,255,255,.25);color:#66d8a0}output{font-variant-numeric:tabular-nums}#hex{font:22px ui-monospace,monospace}#status{line-height:1.5;min-height:24px;margin:16px 0 0}#status[data-error=true]{color:#ff9292}
 summary{cursor:pointer;color:#b5b9c4}pre{font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin-bottom:0;max-height:300px;overflow:auto}
 .presets{display:grid;grid-template-columns:repeat(auto-fill,minmax(105px,1fr));gap:10px}.preset{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;min-height:100px;padding:12px 7px;font-size:12px;background:color-mix(in srgb,var(--preset) 9%,#191b20)}.preset img{width:54px;height:35px;object-fit:contain}.preset[aria-pressed=true]{color:#fff}.preset:disabled{opacity:.4;cursor:not-allowed}.group-title{font-size:14px;color:#a9adba;margin:22px 0 12px}.state-icon{width:26px;height:26px;vertical-align:middle;margin-right:7px}#mode{color:#c9ccd5}select{font:inherit;padding:8px;background:#24272e;border:1px solid #393d47;border-radius:8px}#speed:disabled{opacity:.35}
-.bulb-row{display:flex;align-items:center;gap:12px;margin-top:14px}.bulb-row input{accent-color:#66d8a0}.bulb-row small{margin-left:auto}.bulb-row img{width:25px;height:25px}
+.device-row{display:flex;align-items:center;gap:12px;margin-top:14px}.device-row input{accent-color:#66d8a0}.device-row small{margin-left:auto}.device-row img{width:25px;height:25px}
 </style>
-<header><h1>wizbind</h1></header>
-<section aria-label="Select bulbs"><div class="row"><span>Bulbs · <small id="selection-count">Loading…</small></span><button id="select-all" type="button">All</button></div><div id="bulbs"></div></section>
+<header><h1>wiz</h1></header>
+<section aria-label="Select devices"><div class="row"><span>Devices · <small id="selection-count">Loading…</small></span><button id="select-all" type="button">All</button></div><div id="devices"></div></section>
 <section>
- <div class="row"><div class="row"><input id="color" type="color" value="#00ff00" aria-label="Bulb color"><div><label for="color" class="muted">Color</label><output id="hex">#00FF00</output></div></div><button id="power" type="button" aria-pressed="true">On</button></div>
+ <div class="row"><div class="row"><input id="color" type="color" value="#00ff00" aria-label="Device color"><div><label for="color" class="muted">Color</label><output id="hex">#00FF00</output></div></div><button id="power" type="button" aria-pressed="true">On</button></div>
  <div class="row" style="margin-top:30px"><label for="brightness">Brightness</label><output id="level">60 %</output></div>
  <input id="brightness" type="range" min="10" max="100" value="60" aria-describedby="level">
- <p><img class="state-icon" id="bulb-icon" src="/assets/wifi_connecting.svg" alt=""><span id="mode">Reading state…</span></p>
+ <p><img class="state-icon" id="device-icon" src="/assets/wifi_connecting.svg" alt=""><span id="mode">Reading state…</span></p>
  <p id="status" role="status" aria-live="polite">Connecting…</p>
 </section>
 <section>
@@ -33,13 +33,13 @@ summary{cursor:pointer;color:#b5b9c4}pre{font:12px/1.6 ui-monospace,monospace;wh
 <section><details open><summary>Last local exchange</summary><pre id="wire">Waiting for a response…</pre><details><summary>Equivalent curl</summary><pre id="curl">Select a mode to generate the command.</pre></details></details></section>
 <script>
 const $=s=>document.querySelector(s),color=$('#color'),brightness=$('#brightness'),power=$('#power'),status=$('#status'),wire=$('#wire'),temperature=$('#temperature'),speed=$('#speed');
-let on=true,timer,pending=null,busy=false,polling=null,revision=0,currentScene=0,presets=[],bulbs=[],selected=new Set(),states=new Map(),bulbNames={};
+let on=true,timer,pending=null,busy=false,polling=null,revision=0,currentScene=0,presets=[],devices=[],selected=new Set(),states=new Map(),deviceNames={};
 function labels(){ $('#hex').textContent=color.value.toUpperCase();$('#level').textContent=brightness.value+' %';$('#kelvin').textContent=temperature.value+' K';$('#pace').textContent=speed.value;document.documentElement.style.setProperty('--color',color.value);power.textContent=on?'On':'Off';power.setAttribute('aria-pressed',on);speed.disabled=!presets.find(p=>p.id===currentScene)?.dynamic;document.querySelectorAll('.preset').forEach(b=>b.setAttribute('aria-pressed',Number(b.dataset.scene)===currentScene)) }
-function message(text,error=false){status.textContent=text;status.dataset.error=error;if(error){$('#bulb-icon').src='/assets/disconnected_device_icon.svg';$('#mode').textContent='No local confirmation'}}
-function stateDisplay(state){on=!!state.state;currentScene=state.sceneId||0;$('#bulb-icon').src='/assets/icon_bulb_'+(on?'on':'off')+'.svg';const preset=presets.find(p=>p.id===currentScene);$('#mode').textContent=!on?'Off':preset?preset.label:state.temp?'White · '+state.temp+' K':'RGB color';if(Number.isInteger(state.dimming))brightness.value=state.dimming;if(Number.isInteger(state.temp))temperature.value=state.temp;if(Number.isInteger(state.speed))speed.value=state.speed;if(['r','g','b'].every(k=>Number.isInteger(state[k])))color.value='#'+['r','g','b'].map(k=>state[k].toString(16).padStart(2,'0')).join('');labels()}
+function message(text,error=false){status.textContent=text;status.dataset.error=error;if(error){$('#device-icon').src='/assets/disconnected_device_icon.svg';$('#mode').textContent='No local confirmation'}}
+function stateDisplay(state){on=!!state.state;currentScene=state.sceneId||0;$('#device-icon').src='/assets/icon_device_'+(on?'on':'off')+'.svg';const preset=presets.find(p=>p.id===currentScene);$('#mode').textContent=!on?'Off':preset?preset.label:state.temp?'White · '+state.temp+' K':'RGB color';if(Number.isInteger(state.dimming))brightness.value=state.dimming;if(Number.isInteger(state.temp))temperature.value=state.temp;if(Number.isInteger(state.speed))speed.value=state.speed;if(['r','g','b'].every(k=>Number.isInteger(state[k])))color.value='#'+['r','g','b'].map(k=>state[k].toString(16).padStart(2,'0')).join('');labels()}
 function selectionChanged(){revision++;polling?.abort();pending=null;clearTimeout(timer);$('#selection-count').textContent=selected.size+' selected';displaySelection()}
-function displaySelection(){const values=[...selected].map(ip=>states.get(ip));if(!values.length){$('#mode').textContent='Select a bulb';return}if(values.some(v=>!v)){ $('#mode').textContent='Waiting for selected bulbs';return }const keys=['state','sceneId','temp','r','g','b','dimming','speed'];const mixed=values.some(v=>keys.some(k=>v[k]!==values[0][k]));stateDisplay(values[0]);if(mixed){currentScene=0;labels();$('#mode').textContent='Mixed states · controls show the first selected bulb';power.textContent=values.every(v=>v.state)?'Turn all off':'Turn all on';on=values.every(v=>v.state)}}
-function renderBulbs(){const list=$('#bulbs');list.replaceChildren();for(const ip of bulbs){const row=document.createElement('label');row.className='bulb-row';const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(ip);check.addEventListener('change',()=>{if(check.checked)selected.add(ip);else selected.delete(ip);selectionChanged()});const icon=document.createElement('img');icon.alt='';icon.dataset.ip=ip;icon.src='/assets/wifi_connecting.svg';const name=document.createElement('span');name.textContent=bulbNames[ip]||ip;name.title=ip;const info=document.createElement('small');info.dataset.ip=ip;info.textContent='Reading…';row.append(check,icon,name,info);list.append(row)}selectionChanged()}
+function displaySelection(){const values=[...selected].map(ip=>states.get(ip));if(!values.length){$('#mode').textContent='Select a device';return}if(values.some(v=>!v)){ $('#mode').textContent='Waiting for selected devices';return }const keys=['state','sceneId','temp','r','g','b','dimming','speed'];const mixed=values.some(v=>keys.some(k=>v[k]!==values[0][k]));stateDisplay(values[0]);if(mixed){currentScene=0;labels();$('#mode').textContent='Mixed states · controls show the first selected device';power.textContent=values.every(v=>v.state)?'Turn all off':'Turn all on';on=values.every(v=>v.state)}}
+function renderDevices(){const list=$('#devices');list.replaceChildren();for(const ip of devices){const row=document.createElement('label');row.className='device-row';const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(ip);check.addEventListener('change',()=>{if(check.checked)selected.add(ip);else selected.delete(ip);selectionChanged()});const icon=document.createElement('img');icon.alt='';icon.dataset.ip=ip;icon.src='/assets/wifi_connecting.svg';const name=document.createElement('span');name.textContent=deviceNames[ip]||ip;name.title=ip;const info=document.createElement('small');info.dataset.ip=ip;info.textContent='Reading…';row.append(check,icon,name,info);list.append(row)}selectionChanged()}
 async function exchange(path,body,signal){
  const version=revision,start=performance.now();
  const response=await fetch(path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{signal});
@@ -48,8 +48,8 @@ async function exchange(path,body,signal){
  if(!response.ok)throw Error(data.error||'Local error');
  const results=data.results||[];
  for(const item of results){
-  const row=[...document.querySelectorAll('.bulb-row small')].find(el=>el.dataset.ip===item.ip);
-  const icon=[...document.querySelectorAll('.bulb-row img')].find(el=>el.dataset.ip===item.ip);
+  const row=[...document.querySelectorAll('.device-row small')].find(el=>el.dataset.ip===item.ip);
+  const icon=[...document.querySelectorAll('.device-row img')].find(el=>el.dataset.ip===item.ip);
   let state=item.readback?.result||(!body?item.response?.result:null);
   if(body&&item.ok&&!state){
    const params=item.request.params;
@@ -61,7 +61,7 @@ async function exchange(path,body,signal){
   if(!item.ok)states.delete(item.ip);
   if(version!==revision)continue;
   if(row)row.textContent=item.ok?(body?'Change confirmed':state?(state.state?'On':'Off'):'Change confirmed'):'Offline';
-  if(icon)icon.src='/assets/'+(!item.ok?'disconnected_device_icon':state?'icon_bulb_'+(state.state?'on':'off'):'wifi_connecting')+'.svg';
+  if(icon)icon.src='/assets/'+(!item.ok?'disconnected_device_icon':state?'icon_device_'+(state.state?'on':'off'):'wifi_connecting')+'.svg';
  }
  if(version!==revision)return data;
  wire.textContent=JSON.stringify(data,null,2);
@@ -72,15 +72,15 @@ async function exchange(path,body,signal){
  return data;
 }
 async function send(){if(busy||!pending)return;busy=true;polling?.abort();const body=pending;pending=null;message('Sending change…');const version=revision;try{await exchange('/pilot',body)}catch(error){if(version===revision)message(error.message,true)}finally{busy=false;if(pending)send()}}
-function queue(body){if(!selected.size){message('Select at least one bulb',true);return}body={...body,targets:[...selected]};revision++;polling?.abort();pending=pending||{};if(['color','scene','temperature'].some(k=>k in body)){for(const k of ['color','scene','temperature','speed'])delete pending[k]}pending={...pending,...body};clearTimeout(timer);timer=setTimeout(send,60)}
+function queue(body){if(!selected.size){message('Select at least one device',true);return}body={...body,targets:[...selected]};revision++;polling?.abort();pending=pending||{};if(['color','scene','temperature'].some(k=>k in body)){for(const k of ['color','scene','temperature','speed'])delete pending[k]}pending={...pending,...body};clearTimeout(timer);timer=setTimeout(send,60)}
 color.addEventListener('input',()=>{on=true;currentScene=0;labels();queue({color:color.value,brightness:Number(brightness.value),state:true})});
 brightness.addEventListener('input',()=>{labels();queue({brightness:Number(brightness.value)})});
 power.addEventListener('click',()=>{on=!on;labels();queue({state:on})});
 temperature.addEventListener('input',()=>{on=true;currentScene=0;labels();queue({temperature:Number(temperature.value),brightness:Number(brightness.value),state:true})});
 speed.addEventListener('input',()=>{labels();queue({scene:currentScene,speed:Number(speed.value)})});
 async function poll(){if(busy||pending||polling||!selected.size)return;const controller=new AbortController(),version=revision;polling=controller;try{await exchange('/state?'+new URLSearchParams([...selected].map(ip=>['ip',ip])),null,controller.signal)}catch(error){if(error.name!=='AbortError'&&version===revision)message(error.message,true)}finally{if(polling===controller)polling=null}}
-$('#select-all').addEventListener('click',()=>{selected=new Set(bulbs);renderBulbs()});
-async function init(){const roster=await fetch('/bulbs');if(!roster.ok)throw Error('Could not load bulbs');const rosterData=await roster.json();bulbs=rosterData.bulbs;bulbNames=rosterData.labels||{};selected=new Set(bulbs);renderBulbs();const response=await fetch('/assets/presets.json');if(!response.ok)throw Error('Could not load the catalog');presets=await response.json();$('#preset-count').textContent=presets.length+' app modes';for(const [title,test] of [['Whites and static modes',p=>!p.dynamic&&!p.name.includes('Eyecare')],['Dynamic modes',p=>p.dynamic&&!p.accessory],['Eye care',p=>p.name.includes('Eyecare')],['Synchronization and accessories',p=>p.accessory]]){const items=presets.filter(test);const heading=document.createElement('h2');heading.className='group-title';heading.textContent=title;$('#presets').append(heading);const grid=document.createElement('div');grid.className='presets';for(const preset of items){const button=document.createElement('button');button.className='preset';button.dataset.scene=preset.id;button.style.setProperty('--preset',preset.color);button.setAttribute('aria-pressed','false');button.disabled=preset.accessory;button.title=preset.accessory?'Requires an accessory or synchronization':'sceneId='+preset.id;const icon=document.createElement('img');icon.src='/assets/'+preset.icon;icon.alt='';const label=document.createElement('span');label.textContent=preset.label;button.append(icon,label);button.addEventListener('click',()=>{currentScene=preset.id;on=true;labels();queue({scene:preset.id,brightness:Number(brightness.value),state:true})});grid.append(button)}$('#presets').append(grid)}labels();await poll();setInterval(poll,3000)}
-labels();if(location.protocol==='file:'){message('Open http://127.0.0.1:8765/rgb.html with wizbind web running.',true)}else{init().catch(error=>message(error.message,true))}
+$('#select-all').addEventListener('click',()=>{selected=new Set(devices);renderDevices()});
+async function init(){const roster=await fetch('/devices');if(!roster.ok)throw Error('Could not load devices');const rosterData=await roster.json();devices=rosterData.devices;deviceNames=rosterData.labels||{};selected=new Set(devices);renderDevices();const response=await fetch('/assets/presets.json');if(!response.ok)throw Error('Could not load the catalog');presets=await response.json();$('#preset-count').textContent=presets.length+' app modes';for(const [title,test] of [['Whites and static modes',p=>!p.dynamic&&!p.name.includes('Eyecare')],['Dynamic modes',p=>p.dynamic&&!p.accessory],['Eye care',p=>p.name.includes('Eyecare')],['Synchronization and accessories',p=>p.accessory]]){const items=presets.filter(test);const heading=document.createElement('h2');heading.className='group-title';heading.textContent=title;$('#presets').append(heading);const grid=document.createElement('div');grid.className='presets';for(const preset of items){const button=document.createElement('button');button.className='preset';button.dataset.scene=preset.id;button.style.setProperty('--preset',preset.color);button.setAttribute('aria-pressed','false');button.disabled=preset.accessory;button.title=preset.accessory?'Requires an accessory or synchronization':'sceneId='+preset.id;const icon=document.createElement('img');icon.src='/assets/'+preset.icon;icon.alt='';const label=document.createElement('span');label.textContent=preset.label;button.append(icon,label);button.addEventListener('click',()=>{currentScene=preset.id;on=true;labels();queue({scene:preset.id,brightness:Number(brightness.value),state:true})});grid.append(button)}$('#presets').append(grid)}labels();if(devices.length)await poll();else message('No saved devices. Run wiz pair or wiz upair.');setInterval(poll,3000)}
+labels();if(location.protocol==='file:'){message('Open http://127.0.0.1:24800/ with wiz web running.',true)}else{init().catch(error=>message(error.message,true))}
 </script>
 </html>
