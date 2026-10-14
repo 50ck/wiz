@@ -1,6 +1,6 @@
 # wiz
 
-`wiz` is a local WiZ tool that supports WiZ's manual pairing mode, and device management, such as changing colors and brightness through the local web control panel and CLI commands. All without using the official app for anything. Everything is in your network as it should be.
+`wiz` is an unofficial WiZ tool that supports WiZ's manual pairing mode, and device management, such as changing colors and brightness through the local web control panel and CLI commands. All without using the official app for anything. Everything is in your network as it should be.
 
 ## How to install
 Requires Python 3.11+ and your distribution's Python `cryptography` package.
