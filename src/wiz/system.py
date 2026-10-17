@@ -36,7 +36,10 @@ class Commands:
                 return ""
             # Tool output may contain credentials; never include it in errors.
             raise CommandError(f"{args[0]} failed")
-        return result.stdout.rstrip("\n")
+        output = result.stdout
+        if args[0] == "iwctl":
+            output = re.sub(r"\x1b\[[0-9;]*m", "", output)
+        return output.rstrip("\n")
 
     def read(self, path):
         try:

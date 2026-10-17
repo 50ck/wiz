@@ -205,6 +205,7 @@ class Iwd:
     def __init__(self, commands, link):
         self.commands, self.link = commands, link
         self.changed, self.temporary = False, ""
+        self.setup_address = None
 
     def password(self, ssid):
         # iwd uses =hex when SSID bytes are unsuitable for a literal filename.
@@ -220,6 +221,16 @@ class Iwd:
     def scan(self):
         self.commands.run("iwctl", "station", self.link.name, "scan", privileged=True,
                           timeout=12, optional=True)
+        # Scan starts asynchronously; get-networks alone can return stale APs.
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            status = self.commands.run("iwctl", "station", self.link.name, "show",
+                                       privileged=True, timeout=3)
+            if re.search(r"(?m)^\s*Scanning\s+no\s*$", status):
+                break
+            time.sleep(0.25)
+        else:
+            raise CommandError("iwd scan did not finish within 12 seconds")
         output = self.commands.run("iwctl", "station", self.link.name, "get-networks", privileged=True)
         return sorted(set(re.findall(r"\bWiZConfig_[0-9a-fA-F]{4}\b", output)))
 
@@ -227,20 +238,36 @@ class Iwd:
         self.changed = True
         known = self.commands.run("iwctl", "known-networks", "list", privileged=True)
         self.temporary = "" if re.search(r"\b" + re.escape(ssid) + r"\b", known) else ssid
-        self.commands.run("iwctl", "station", self.link.name, "connect", ssid,
-                          privileged=True, timeout=35)
+        for attempt in range(2):
+            try:
+                self.commands.run("iwctl", "--dont-ask", "station", self.link.name, "connect", ssid,
+                                  privileged=True, timeout=35)
+                return
+            except CommandError:
+                if attempt:
+                    raise CommandError("iwd could not connect to WiZConfig after rescanning") from None
+                if ssid not in self.scan():
+                    raise CommandError("WiZConfig is no longer visible; return the device to manual pairing mode") from None
 
     def restore(self):
         if not self.changed:
             return
-        if self.link.ssid:
-            self.commands.run("iwctl", "station", self.link.name, "connect", self.link.ssid,
-                              privileged=True, timeout=35)
-        else:
-            self.commands.run("iwctl", "station", self.link.name, "disconnect", privileged=True)
-        if self.temporary:
-            self.commands.run("iwctl", "known-networks", self.temporary, "forget",
-                              privileged=True, optional=True)
+        try:
+            if self.setup_address is not None:
+                self.commands.run("ip", "address", "del", str(self.setup_address), "dev", self.link.name,
+                                  privileged=True)
+                self.setup_address = None
+            if self.link.ssid:
+                self.commands.run("iwctl", "--dont-ask", "station", self.link.name, "connect", self.link.ssid,
+                                  privileged=True, timeout=35)
+            else:
+                status = self.commands.run("iwctl", "station", self.link.name, "show", privileged=True)
+                if not re.search(r"(?m)^\s*State\s+disconnected\s*$", status):
+                    self.commands.run("iwctl", "station", self.link.name, "disconnect", privileged=True)
+        finally:
+            if self.temporary:
+                self.commands.run("iwctl", "known-networks", self.temporary, "forget",
+                                  privileged=True, optional=True)
         self.changed = False
 
 
@@ -353,6 +380,23 @@ def dhcp_refresh(commands, manager):
         commands.run("dhcpcd", "-n", manager.link.name, privileged=True, timeout=20)
     elif "systemd-networkd" in processes and shutil.which("networkctl"):
         commands.run("networkctl", "reconfigure", manager.link.name, privileged=True)
+    elif isinstance(manager, Iwd) and not manager.link.ssid and not manager.link.addresses:
+        links = inventory(commands)
+        current = next((link for link in links if link.name == manager.link.name), None)
+        if current is None or not re.fullmatch(r"WiZConfig_[0-9a-fA-F]{4}", current.ssid):
+            return
+        if current.addresses or not any(link.up and not link.wireless and link.addresses
+                                        and link.name != current.name for link in links):
+            return
+        address = IPv4Interface("192.168.56.2/24")
+        if any(link.up and link.name != current.name and any(
+                other.network.overlaps(address.network) for other in link.addresses) for link in links):
+            raise CommandError("The WiZConfig subnet overlaps another active interface")
+        # Same known-subnet fallback as NativeWifi, for a dedicated idle iwd radio.
+        # Only this address is owned; no default route, DNS or daemon changes.
+        print("Configuring temporary WiZConfig IPv4 address...", flush=True)
+        commands.run("ip", "address", "add", str(address), "dev", current.name, privileged=True)
+        manager.setup_address = address
     # iwd's built-in IP configuration and link-aware clients need no extra call.
 
 
