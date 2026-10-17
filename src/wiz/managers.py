@@ -13,7 +13,7 @@ from pathlib import Path
 from ipaddress import IPv4Interface
 
 from .pairing import generate_pairing_payload, validate_credentials
-from .protocol import finish, request, setup_device, wait_for_setup_exit
+from .protocol import finish, finish_many, request, setup_device, wait_for_setup_exit
 from .system import CommandError, inventory
 
 
@@ -106,15 +106,20 @@ class NativeWifi:
         return sorted(set(re.findall(r"\bWiZConfig_[0-9a-fA-F]{4}\b", output)))
 
     def connect(self, ssid):
+        previous = self.changed
         self.changed = True
         if platform.system() == "FreeBSD":
             self.commands.run("ifconfig", self.link.name, "ssid", ssid, privileged=True)
-            self.commands.run("ifconfig", self.link.name, "inet", str(self.address), "alias",
-                              privileged=True)
+            if not previous:
+                self.commands.run("ifconfig", self.link.name, "inet", str(self.address), "alias",
+                                  privileged=True)
         else:
+            if previous:
+                self.commands.run("iw", "dev", self.link.name, "disconnect", privileged=True, optional=True)
             self.commands.run("iw", "dev", self.link.name, "connect", ssid, privileged=True)
-            self.commands.run("ip", "address", "add", str(self.address), "dev", self.link.name,
-                              privileged=True)
+            if not previous:
+                self.commands.run("ip", "address", "add", str(self.address), "dev", self.link.name,
+                                  privileged=True)
 
     def restore(self):
         if not self.changed:
@@ -176,11 +181,15 @@ class NetworkManager:
         return sorted(set(re.findall(r"(?m)^WiZConfig_[0-9a-fA-F]{4}$", output)))
 
     def connect(self, ssid):
-        self.commands.run("nmcli", "connection", "add", "type", "wifi", "ifname", self.link.name,
-                          "con-name", "wiz-" + self.temporary, "connection.uuid", self.temporary,
-                          "ssid", ssid, "connection.autoconnect", "no", "ipv4.method", "auto",
-                          "ipv4.never-default", "yes", "ipv4.ignore-auto-dns", "yes",
-                          "ipv6.method", "disabled", privileged=True)
+        if self.created:
+            self.commands.run("nmcli", "connection", "modify", "uuid", self.temporary,
+                              "802-11-wireless.ssid", ssid, privileged=True)
+        else:
+            self.commands.run("nmcli", "connection", "add", "type", "wifi", "ifname", self.link.name,
+                              "con-name", "wiz-" + self.temporary, "connection.uuid", self.temporary,
+                              "ssid", ssid, "connection.autoconnect", "no", "ipv4.method", "auto",
+                              "ipv4.never-default", "yes", "ipv4.ignore-auto-dns", "yes",
+                              "ipv6.method", "disabled", privileged=True)
         self.created = True
         self.commands.run("nmcli", "--wait", "30", "connection", "up", "uuid", self.temporary,
                           "ifname", self.link.name, privileged=True, timeout=35)
@@ -206,6 +215,7 @@ class Iwd:
         self.commands, self.link = commands, link
         self.changed, self.temporary = False, ""
         self.setup_address = None
+        self.owned_networks = set()
 
     def password(self, ssid):
         # iwd uses =hex when SSID bytes are unsuitable for a literal filename.
@@ -238,6 +248,8 @@ class Iwd:
         self.changed = True
         known = self.commands.run("iwctl", "known-networks", "list", privileged=True)
         self.temporary = "" if re.search(r"\b" + re.escape(ssid) + r"\b", known) else ssid
+        if self.temporary:
+            self.owned_networks.add(self.temporary)
         for attempt in range(2):
             try:
                 self.commands.run("iwctl", "--dont-ask", "station", self.link.name, "connect", ssid,
@@ -265,9 +277,10 @@ class Iwd:
                 if not re.search(r"(?m)^\s*State\s+disconnected\s*$", status):
                     self.commands.run("iwctl", "station", self.link.name, "disconnect", privileged=True)
         finally:
-            if self.temporary:
-                self.commands.run("iwctl", "known-networks", self.temporary, "forget",
+            for network in sorted(self.owned_networks):
+                self.commands.run("iwctl", "known-networks", network, "forget",
                                   privileged=True, optional=True)
+            self.owned_networks.clear()
         self.changed = False
 
 
@@ -282,6 +295,7 @@ class Supplicant:
         self.enabled = [r.split("\t")[0] for r in rows if re.match(r"^\d+\t", r)
                         and "[DISABLED]" not in r]
         self.temporary = ""
+        self.changed = False
 
     def call(self, *args, optional=False):
         output = self.commands.run("wpa_cli", "-i", self.link.name, *args,
@@ -329,6 +343,10 @@ class Supplicant:
         return sorted(set(re.findall(r"\bWiZConfig_[0-9a-fA-F]{4}\b", output)))
 
     def connect(self, ssid):
+        self.changed = True
+        if self.temporary:
+            self.call("remove_network", self.temporary)
+            self.temporary = ""
         output = self.call("add_network")
         match = re.search(r"(?m)^(\d+)$", output)
         if not match:
@@ -339,9 +357,10 @@ class Supplicant:
         self.call("select_network", self.temporary)
 
     def restore(self):
-        if not self.temporary:
+        if not self.changed:
             return
-        self.call("remove_network", self.temporary)
+        if self.temporary:
+            self.call("remove_network", self.temporary)
         if self.original:
             self.call("select_network", self.original)
         else:
@@ -349,6 +368,7 @@ class Supplicant:
         for identifier in self.enabled:
             self.call("enable_network", identifier)
         self.temporary = ""
+        self.changed = False
 
 
 def detect(commands, link):
@@ -499,29 +519,49 @@ def unattended(commands, args):
             time.sleep(min(2, max(0, deadline - time.monotonic())))
         if not found:
             raise RuntimeError("WiZConfig_xxxx was not found within 1 minute")
-        if len(found) > 1:
-            raise RuntimeError("Several WiZConfig devices found; put only one device in pairing mode")
-        print(f"Connecting to {found[0]}...", flush=True)
-        manager.connect(found[0])
-        dhcp_refresh(commands, manager)
-        ready = time.monotonic() + 45
-        setup = None
-        while time.monotonic() < ready:
+        found = sorted(set(found))
+        if len(found) > 32:
+            raise RuntimeError("At most 32 devices can be paired together")
+        if len(found) > 1 and args.device_ip:
+            raise RuntimeError("--device-ip can only be used with one device")
+        identities, errors = [], []
+        print(f"Found {len(found)} device(s).", flush=True)
+        for index, network in enumerate(found):
             try:
-                setup = setup_device(commands, link.name)
-                if setup[0].ssid == found[0]:
-                    break
+                print(f"Connecting to {network} ({index + 1}/{len(found)})...", flush=True)
+                if index and platform.system() == "Linux":
+                    # Different devices share the setup gateway IP; drop only its old neighbor.
+                    commands.run("ip", "neighbor", "del", peer, "dev", link.name,
+                                 privileged=True, optional=True)
+                manager.connect(network)
+                dhcp_refresh(commands, manager)
+                ready = time.monotonic() + 45
                 setup = None
-            except RuntimeError:
-                pass
-            time.sleep(0.5)
-        if setup is None:
-            raise RuntimeError("WiZConfig association or IPv4 configuration failed")
-        _, address, peer, identity = setup
-        print("Sending /pairing...", flush=True)
-        request(address, peer, "/pairing", payload)
-        print("POST /pairing: HTTP 200", flush=True)
-        wait_for_setup_exit(address, peer, identity)
+                while time.monotonic() < ready:
+                    try:
+                        setup = setup_device(commands, link.name)
+                        if setup[0].ssid == network:
+                            break
+                        setup = None
+                    except RuntimeError:
+                        pass
+                    time.sleep(0.5)
+                if setup is None:
+                    raise RuntimeError("WiZConfig association or IPv4 configuration failed")
+                _, address, peer, identity = setup
+                if identity in identities:
+                    raise RuntimeError("The same device was detected twice")
+                print(f"Sending /pairing to {network}...", flush=True)
+                request(address, peer, "/pairing", payload if not index else generate_pairing_payload(ssid, password))
+                print("POST /pairing: HTTP 200", flush=True)
+                wait_for_setup_exit(address, peer, identity)
+                identities.append(identity)
+            except (RuntimeError, OSError) as error:
+                if not identities:
+                    raise
+                errors.append(f"{network}: {error}")
+                print(f"Pairing stopped at {network}; completing earlier devices first.", flush=True)
+                break
         print("OK! Restoring the original connection...", flush=True)
         restore(commands, manager)
         restored = True
@@ -530,5 +570,13 @@ def unattended(commands, args):
         if not restored:
             print("Restoring the original connection...", flush=True)
             restore(commands, manager)
-    finish(commands, identity, args.timeout, args.device_ip, ssid)
+    try:
+        if len(identities) == 1:
+            finish(commands, identities[0], args.timeout, args.device_ip, ssid)
+        else:
+            finish_many(commands, identities, args.timeout, args.device_ip, ssid)
+    except (RuntimeError, OSError) as error:
+        errors.append(str(error))
+    if errors:
+        raise RuntimeError("Batch pairing incomplete: " + "; ".join(errors))
     print("All set!")

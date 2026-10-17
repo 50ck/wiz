@@ -159,7 +159,7 @@ def confirm(address, identity, timeout=30):
     raise RuntimeError("Device accepted /complete but did not respond to getPilot; local pairing is not confirmed")
 
 
-def finish(commands, identity, timeout=120, device_ip=None, target_ssid=None):
+def locate(commands, identity, timeout=120, device_ip=None, target_ssid=None):
     deadline = time.monotonic() + timeout
     print("Searching for the device...", flush=True)
     while time.monotonic() < deadline:
@@ -210,16 +210,51 @@ def finish(commands, identity, timeout=120, device_ip=None, target_ssid=None):
                         except (RuntimeError, ValueError):
                             continue
                         print(f"Device's IP is {ip}.", flush=True)
-                        print("Sending /complete...", flush=True)
-                        try:
-                            request(address, ip, "/complete", {})
-                        except RuntimeError:
-                            continue
-                        print("Waiting for local WiZ confirmation...", flush=True)
-                        ip = confirm(address, identity, min(30, max(0.1, deadline - time.monotonic())))
-                        save_device(identity, ip)
-                        return ip
+                        return address, ip
             if time.monotonic() >= deadline:
                 break
         time.sleep(min(1, max(0, deadline - time.monotonic())))
     raise RuntimeError("Device was not found in connected setup state; check the network or use --device-ip")
+
+
+def finish_many(commands, identities, timeout=120, device_ip=None, target_ssid=None):
+    """Discover all devices, complete all, then confirm and persist each identity."""
+    identities = list(dict.fromkeys(mac(identity) for identity in identities))
+    if not identities:
+        return {}
+    if len(identities) > 1 and device_ip:
+        raise ValueError("--device-ip can only be used with one device")
+    targets, completed, results, failures = [], [], {}, []
+    for identity in identities:
+        try:
+            address, ip = locate(commands, identity, timeout, device_ip, target_ssid)
+            targets.append((identity, address, ip))
+        except (RuntimeError, OSError) as error:
+            failures.append(f"{identity}: {error}")
+    for identity, address, ip in targets:
+        try:
+            # Other devices may have taken time to appear; recheck before writing.
+            device = request(address, ip, "/device")
+            if identify(device) != identity or device["status"] != 5:
+                raise RuntimeError("Device identity or setup state changed before /complete")
+            print(f"Sending /complete to {ip}...", flush=True)
+            request(address, ip, "/complete", {})
+            completed.append((identity, address))
+        except (RuntimeError, ValueError, OSError) as error:
+            failures.append(f"{identity}: {error}")
+    for identity, address in completed:
+        try:
+            print(f"Waiting for local WiZ confirmation ({identity})...", flush=True)
+            ip = confirm(address, identity, min(30, timeout))
+            label = save_device(identity, ip)
+            results[identity] = ip
+            print(f"{label}: {ip} — getPilot OK", flush=True)
+        except (RuntimeError, ValueError, OSError) as error:
+            failures.append(f"{identity}: {error}")
+    if failures:
+        raise RuntimeError("Some devices were not paired: " + "; ".join(failures))
+    return results
+
+
+def finish(commands, identity, timeout=120, device_ip=None, target_ssid=None):
+    return finish_many(commands, [identity], timeout, device_ip, target_ssid)[identity]
